@@ -397,7 +397,7 @@ export default function Home() {
 
       const nextGroups: ItemGroup[] = merged.map((g, i) => ({
         id: newId(),
-        sku: `${buildSku(binPrefix, skuOffset + i).slice(0, 37)}-${newId().replace(/-/g, "").slice(0, 12)}`,
+        sku: binPrefix.trim() ? (merged.length > 1 || skuOffset > 0 ? `${binPrefix.trim()} - ${skuOffset + i + 1}` : binPrefix.trim()) : `Item ${skuOffset + i + 1}`,
         name: g.name,
         photoIds: g.photoIds,
         status: "idle",
@@ -514,7 +514,7 @@ export default function Home() {
       ...prev,
       {
         id: newId(),
-        sku: `${buildSku(binPrefix, skuStart + prev.length).slice(0, 37)}-${newId().replace(/-/g, "").slice(0, 12)}`,
+        sku: binPrefix.trim() ? `${binPrefix.trim()} - ${skuStart + prev.length + 1}` : `Item ${skuStart + prev.length + 1}`,
         name: `new-item-${prev.length + 1}`,
         photoIds: [],
         status: "idle",
@@ -1111,7 +1111,7 @@ export default function Home() {
                   setGroups([
                     {
                       id,
-                      sku: `${buildSku(binPrefix, 0).slice(0, 37)}-${id.replace(/-/g, "").slice(0, 12)}`,
+                      sku: binPrefix.trim() ? binPrefix.trim() : "Item 1",
                       name: "Single item",
                       photoIds: photos.map((p) => p.id),
                       status: "idle",
