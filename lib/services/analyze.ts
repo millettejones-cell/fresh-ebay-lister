@@ -80,23 +80,23 @@ async function routeProfile(
       client,
       {
         model: routerModel,
-        max_tokens: 300,
+max_tokens: 300,
         messages: [
           {
-            {
-                role: "user",
-                content: [
-                  ...imageBlocks,
-                  {
-                    type: "text",
-                    text: (body as any).title 
-                      ? `Analyze these photos and return the listing JSON now. CRITICAL WILDCARD TEXT TO USE: "${(body as any).title}"` 
-                      : "Analyze these photos and return the listing JSON now.",
-                  },
-                ],
-              },
+            role: "user",
+            content: [
+              ...imageBlocks,
+              {
+                type: "text",
+                text: (body as any).title 
+                  ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user has provided this text: "${(body as any).title}". You MUST use this exact text to identify the item and build the title and specifics.` 
+                  : "Analyze these photos and return the listing JSON now.",
+              }
+            ]
+          }
+        ]
       },
-      { timeout: Math.min(ROUTER_TIMEOUT_MS, remaining), maxRetries: 0 },
+      { timeout: Math.min(ROUTER_TIMEOUT_MS, remaining), maxRetries: 0 }
     );
     const text = firstText(resp);
     const data = parseModelJson<{ profile?: string }>(text);
