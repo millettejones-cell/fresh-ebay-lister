@@ -210,7 +210,7 @@ async function handle(input: unknown) {
                   {
                     type: "text",
                     text: (body as any).title 
-                      ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user has provided this text: "${(body as any).title}". You MUST use this exact text to identify the item and build the title and specifics.` 
+                      ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user identified this as "${(body as any).title}". You MUST use these EXACT words in the title. DO NOT substitute words or use synonyms (e.g., do NOT change "rattle" to "bell", and do not invent clappers). You MUST place this item in a category appropriate for exactly what the user called it.` 
                       : "Analyze these photos and return the listing JSON now.",
                   },
                 ],
