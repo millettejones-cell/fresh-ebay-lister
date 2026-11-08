@@ -65,7 +65,6 @@ Do not fill hard-good fields unless they are actually relevant.`,
   hard_goods: `\n\nPROFILE: HARD GOODS
 Prioritize durable-goods catalog details. Look for labels, plates, bottoms, stickers, packaging, manuals, molded marks, and printed specs.
 Capture exact item type, brand/maker, model, MPN/part number, serial number, UPC/barcode, color, material, dimensions, capacity, power source, voltage, compatibility, included accessories, country/region of manufacture, year/date codes, style, finish, features, and condition/testing status.
-For untested electronics or appliances, say untested in condition_notes instead of implying functionality.
 For parts/accessories, capture Compatible Brand and Compatible Model when visible or obvious from packaging.`,
   art: `\n\nPROFILE: ART
 Prioritize art-specific cataloging. Capture artist/maker, title/subject, medium, style, production technique, original vs reproduction, signed status, signature location, date/year, image size, frame size, framing/matting, surface/material, edition number, provenance labels, gallery or publisher marks, and condition.
@@ -87,7 +86,7 @@ export const ANALYSIS_PROMPT = `You are a careful resale catalog assistant. Insp
 
 CRITICAL INSTRUCTION: If I provide a specific text phrase or model number along with the request, you MUST treat it as verified truth. You must integrate that exact phrase into the title and use it to look up the item's specifics, even if you cannot clearly read it in the photos.
 
-Extract only facts visible in these photos or explicitly provided in the request text. Use empty strings or omit specifics when unknown. Never invent required fields. Do not claim testing unless provided. Describe visible flaws clearly. For electronics, state testing status unknown unless provided.
+Extract only facts visible in these photos or explicitly provided in the request text. Use empty strings or omit specifics when unknown. Never invent required fields. Describe visible flaws clearly.
 
 *** TITLE GENERATION RULES ***
 1. LENGTH: The title MUST be 80 characters or less. Count carefully. Do not exceed 80 characters.
@@ -124,68 +123,3 @@ export function buildSortPrompt(
   labelEnd: number,
   contextNote: string,
 ): string {
-  return `You are helping organize resale item photos into separate eBay listings.
-
-I will show you ${nPhotos} photos, numbered ${labelStart} through ${labelEnd}.${contextNote}
-
-Your job: group these numbered photos by physical item. Each group = one eBay listing.
-
-Rules:
-- Photos of the SAME item go in the same group (front view, back view, tag photo, close-up = same item)
-- Each distinct physical item = its own separate group
-- Every numbered photo must go in exactly one group
-- Use short descriptive folder names: brand + color + item type, all lowercase, hyphens only
-  Examples: "nike-black-dri-fit-top", "coach-tan-leather-tote", "levis-501-blue-jeans"
-
-Return ONLY valid JSON:
-{
-  "groups": [
-    {"folder_name": "brand-color-item-type", "photo_indices": [${labelStart}, ${labelStart + 1}]},
-    {"folder_name": "brand-color-item-type", "photo_indices": [${labelEnd}]}
-  ]
-}
-
-No markdown. No explanation. JSON only.`;
-}
-
-export function buildVerifyGroupPrompt(n: number): string {
-  return `Look carefully at these ${n} photos. They have been proposed as a single eBay listing.
-
-Do ALL of these photos show the SAME physical item?
-- Front/back/side/tag/close-up/tape-measure shots of ONE item → all the same item → valid
-- A close-up or measurement view may show only a small section. Compare knit texture, stitching, seams and trim across the full set; do not reject it merely because the brand or whole garment is not visible.
-- A completely different item mixed in by mistake → invalid
-
-If all photos are the SAME item:
-{"valid": true}
-
-If photos of DIFFERENT items are mixed together:
-{"valid": false, "keep_indices": [1-based indices of the photos belonging to the MAIN/majority item], "reason": "one sentence explanation"}
-
-Return ONLY valid JSON. No markdown. No explanation.`;
-}
-
-export function buildVerifyMergePrompt(nA: number, nB: number): string {
-  return `I have two groups of photos that were sorted as separate eBay listings.
-
-Group A: ${nA} photo(s) shown first.
-Group B: ${nB} photo(s) shown after.
-
-Look carefully at ALL photos. Are ALL of them actually the SAME physical item that was accidentally split into two groups? (For example: front view in Group A, back view and tag in Group B.)
-
-Same item — should be ONE listing:
-{"merge": true}
-
-Different items — keep as separate listings:
-{"merge": false}
-
-Return ONLY valid JSON. No markdown. No explanation.`;
-}
-
-export function slugifyFolderName(raw: string): string {
-  const lowered = String(raw || "item")
-    .toLowerCase()
-    .trim();
-  const cleaned = lowered.replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
-  return cleaned.replace(/^-+|-+$/g, "") || "item";
-}
