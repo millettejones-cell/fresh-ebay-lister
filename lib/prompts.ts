@@ -91,9 +91,10 @@ Extract only facts visible in these photos or explicitly provided in the request
 
 *** TITLE GENERATION RULES ***
 1. LENGTH: The title MUST be 80 characters or less. Count carefully. Do not exceed 80 characters.
-2. STRUCTURE: You MUST write the title in this exact hierarchy order:
-   [Brand/Maker] + [Core Item Name] + [Key Identifier/Scale/Edition] + [Condition/Vintage Cues]
-3. EXCLUSIONS: NEVER use subjective fluff words. BANNED WORDS: "Stunning", "Rare", "L@@K", "Beautiful", "Amazing", "Awesome", "Great", "Good", "Excellent". 
+2. DYNAMIC STRUCTURE: You MUST format the title based on the item type:
+   - For CLOTHING & SHOES: [Brand] + [Gender/Department] + [Style/Core Item Name] + [Printed Size] + [Color] + [Condition]
+   - For HARD GOODS, COLLECTIBLES & MEDIA: [Brand/Maker] + [Core Item Name] + [Key Identifier/Model/Scale/Edition] + [Condition/Vintage Cues]
+3. EXCLUSIONS: NEVER use subjective fluff words. BANNED WORDS: "Stunning", "Rare", "L@@K", "Beautiful", "Amazing", "Awesome", "Great", "Good". 
 4. Include any provided model numbers or text hints exactly as written.
 
 Keep description factual and readable, with included accessories and visible condition. Write buyer-facing prose only. Describe specific visible wear or flaws directly; keep uncertain observations in condition_notes. Do not invent wear merely because an item is pre-owned. No keyword stuffing or irrelevant brands.
