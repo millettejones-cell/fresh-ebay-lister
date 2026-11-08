@@ -83,13 +83,18 @@ async function routeProfile(
         max_tokens: 300,
         messages: [
           {
-            role: "user",
-            content: [
-              ...imageBlocks,
-              { type: "text", text: PROFILE_ROUTER_PROMPT },
-            ],
-          },
-        ],
+            {
+                role: "user",
+                content: [
+                  ...imageBlocks,
+                  {
+                    type: "text",
+                    text: (body as any).title 
+                      ? `Analyze these photos and return the listing JSON now. CRITICAL WILDCARD TEXT TO USE: "${(body as any).title}"` 
+                      : "Analyze these photos and return the listing JSON now.",
+                  },
+                ],
+              },
       },
       { timeout: Math.min(ROUTER_TIMEOUT_MS, remaining), maxRetries: 0 },
     );
