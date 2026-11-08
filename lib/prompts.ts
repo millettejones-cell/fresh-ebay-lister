@@ -108,7 +108,9 @@ Do not include tape-derived measurements in the title, description or specifics.
 Return search_terms: up to 4 short distinctive exact phrases. 
 suggested_price is an unverified estimate from general knowledge. Use 0 when unknown.
 
-Return structured JSON. Specifics are an array of {name,value,photoIndices,basis,quote,confidence}. basis is label for directly readable label text, visible_feature for plainly visible construction, estimate for an educated guess, or text_prompt if the value was provided by the user in the wildcard box. Fill as many category-relevant specifics as reach 60 confidence. Use at most 40 specifics, 5 key features and 10 search phrases.`;
+Return structured JSON. Specifics are an array of {name,value,photoIndices,basis,quote,confidence}. basis is label for directly readable label text, visible_feature for plainly visible construction, estimate for an educated guess, or text_prompt if the value was provided by the user in the wildcard box. 
+STRICT MINIMALIST SPECIFICS: Only output the most critical, high-value search specifics (e.g., Brand, Type, Material, Model, MPN, Color, Size). Do NOT fill out obscure, minor, or subjective fields just to have them. Omit anything you are not 100% sure about. Return a MAXIMUM of 8 essential specifics.`;
+
 export function buildProfiledAnalysisPrompt(profile: string): string {
   const normalized = normalizeItemProfile(profile);
   const addon = PROFILE_PROMPT_ADDONS[normalized] ?? "";
@@ -123,3 +125,68 @@ export function buildSortPrompt(
   labelEnd: number,
   contextNote: string,
 ): string {
+  return `You are helping organize resale item photos into separate eBay listings.
+
+I will show you ${nPhotos} photos, numbered ${labelStart} through ${labelEnd}.${contextNote}
+
+Your job: group these numbered photos by physical item. Each group = one eBay listing.
+
+Rules:
+- Photos of the SAME item go in the same group (front view, back view, tag photo, close-up = same item)
+- Each distinct physical item = its own separate group
+- Every numbered photo must go in exactly one group
+- Use short descriptive folder names: brand + color + item type, all lowercase, hyphens only
+  Examples: "nike-black-dri-fit-top", "coach-tan-leather-tote", "levis-501-blue-jeans"
+
+Return ONLY valid JSON:
+{
+  "groups": [
+    {"folder_name": "brand-color-item-type", "photo_indices": [${labelStart}, ${labelStart + 1}]},
+    {"folder_name": "brand-color-item-type", "photo_indices": [${labelEnd}]}
+  ]
+}
+
+No markdown. No explanation. JSON only.`;
+}
+
+export function buildVerifyGroupPrompt(n: number): string {
+  return `Look carefully at these ${n} photos. They have been proposed as a single eBay listing.
+
+Do ALL of these photos show the SAME physical item?
+- Front/back/side/tag/close-up/tape-measure shots of ONE item → all the same item → valid
+- A close-up or measurement view may show only a small section. Compare knit texture, stitching, seams and trim across the full set; do not reject it merely because the brand or whole garment is not visible.
+- A completely different item mixed in by mistake → invalid
+
+If all photos are the SAME item:
+{"valid": true}
+
+If photos of DIFFERENT items are mixed together:
+{"valid": false, "keep_indices": [1-based indices of the photos belonging to the MAIN/majority item], "reason": "one sentence explanation"}
+
+Return ONLY valid JSON. No markdown. No explanation.`;
+}
+
+export function buildVerifyMergePrompt(nA: number, nB: number): string {
+  return `I have two groups of photos that were sorted as separate eBay listings.
+
+Group A: ${nA} photo(s) shown first.
+Group B: ${nB} photo(s) shown after.
+
+Look carefully at ALL photos. Are ALL of them actually the SAME physical item that was accidentally split into two groups? (For example: front view in Group A, back view and tag in Group B.)
+
+Same item — should be ONE listing:
+{"merge": true}
+
+Different items — keep as separate listings:
+{"merge": false}
+
+Return ONLY valid JSON. No markdown. No explanation.`;
+}
+
+export function slugifyFolderName(raw: string): string {
+  const lowered = String(raw || "item")
+    .toLowerCase()
+    .trim();
+  const cleaned = lowered.replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-");
+  return cleaned.replace(/^-+|-+$/g, "") || "item";
+}
