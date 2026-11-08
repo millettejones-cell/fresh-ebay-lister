@@ -20,17 +20,6 @@ const CONDITIONS: { value: string; label: string }[] = [
   { value: "FOR_PARTS_OR_NOT_WORKING", label: "For parts / not working" },
 ];
 
-function formatPrice(value: ListingResult["suggested_price"]): string {
-  const n = typeof value === "string" ? parseFloat(value) : value;
-  if (n === undefined || Number.isNaN(n)) return "$0.00";
-  return `$${n.toFixed(2)}`;
-}
-
-function priceToInput(value: ListingResult["suggested_price"]): string {
-  const n = typeof value === "string" ? parseFloat(value) : value;
-  return n === undefined || Number.isNaN(n) ? "" : String(n);
-}
-
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -95,16 +84,6 @@ export function ListingCard({
   const sizeRequired = SIZE_REQUIRED_CATEGORIES.has(listing?.category ?? "");
   const sizeMissing = sizeRequired && !(listing?.size ?? "").trim();
 
-  // Publishing refuses a missing/zero price (no more invented defaults), so
-  // flag it here the same way size is flagged — before the seller hits Post.
-  const priceNum =
-    typeof listing?.suggested_price === "string"
-      ? parseFloat(listing.suggested_price)
-      : listing?.suggested_price;
-  const priceMissing =
-    group.status === "done" &&
-    (priceNum === undefined || Number.isNaN(priceNum) || priceNum <= 0);
-
   return (
     <article className={`listing-card status-${group.status}`}>
       <header className="listing-card-head" onClick={() => setOpen((o) => !o)}>
@@ -123,17 +102,11 @@ export function ListingCard({
                 <span className="spinner small" aria-hidden="true" /> Writing…
               </>
             )}
-            {group.status === "done" &&
-              (priceMissing ? (
-                <span style={{ color: "var(--color-danger)" }}>
-                  ⚠️ needs a price
-                </span>
-              ) : (
-                <>
-                  {formatPrice(listing?.suggested_price)} ·{" "}
-                  {draftIssues(group).length ? "needs review" : "ready"}
-                </>
-              ))}
+            {group.status === "done" && (
+              <>
+                {draftIssues(group).length ? "needs review" : "ready"}
+              </>
+            )}
             {group.status === "error" && (
               <span style={{ color: "var(--color-danger)" }}>
                 ⚠️ {group.error || "Failed"}
@@ -186,8 +159,6 @@ export function ListingCard({
           </div>
 
           <div className="meta-row">
-            {/* SKU stays editable up until the item is posted, so a SKU fix
-                never requires going back and re-writing listings (issue #30). */}
             <div className="stat editable">
               <label className="k" htmlFor={`sku-${group.id}`}>
                 SKU
@@ -201,52 +172,8 @@ export function ListingCard({
                 onChange={(e) => onRenameSku(group.id, e.target.value)}
               />
             </div>
-            <div
-              className={`stat editable${priceMissing ? " needs-attention" : ""}`}
-            >
-              <label className="k" htmlFor={`price-${group.id}`}>
-                Price
-              </label>
-              <div className="price-input">
-                <span aria-hidden="true">$</span>
-                <input
-                  id={`price-${group.id}`}
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={priceToInput(listing.suggested_price)}
-                  onChange={(e) =>
-                    onEdit(group.id, {
-                      suggested_price:
-                        e.target.value === "" ? "" : Number(e.target.value),
-                    })
-                  }
-                />
-              </div>
-              {group.comps?.ok && group.comps.median !== undefined && (
-                <span className="comps-line" title={group.comps.basis}>
-                  Market: {group.comps.count} similar active listings, $
-                  {group.comps.low?.toFixed(0)}–${group.comps.high?.toFixed(0)}
-                  {" · "}
-                  <button
-                    type="button"
-                    className="comps-use"
-                    onClick={() =>
-                      onEdit(group.id, {
-                        suggested_price:
-                          group.comps!.listPrice ?? group.comps!.median,
-                      })
-                    }
-                  >
-                    {/* listPrice = median + the deployment's storewide markup */}
-                    {group.comps.listPrice !== undefined
-                      ? `use $${group.comps.listPrice.toFixed(2)} (median + markup)`
-                      : `use median $${group.comps.median.toFixed(2)}`}
-                  </button>
-                </span>
-              )}
-            </div>
+            
+            {/* Condition Dropdown replaces the old Price field */}
             <div className="stat editable">
               <label className="k" htmlFor={`cond-${group.id}`}>
                 Condition
@@ -261,7 +188,6 @@ export function ListingCard({
                   })
                 }
               >
-                {/* Keep an unexpected model value selectable rather than losing it. */}
                 {listing.condition &&
                   !CONDITIONS.some((c) => c.value === listing.condition) && (
                     <option value={listing.condition}>
@@ -275,6 +201,7 @@ export function ListingCard({
                 ))}
               </select>
             </div>
+
             {listing.brand && (
               <div className="stat">
                 <div className="k">Brand</div>
@@ -308,14 +235,6 @@ export function ListingCard({
             </p>
           )}
 
-          {priceMissing && (
-            <p className="size-warning" role="alert">
-              ⚠️ No price yet — the analysis couldn&rsquo;t estimate one for
-              this item. Set a price above before posting
-              {group.comps?.ok ? " (see the market check under Price)" : ""}.
-            </p>
-          )}
-
           <div className="result-field">
             <label>Description</label>
             <textarea
@@ -342,17 +261,17 @@ export function ListingCard({
           {group.postStatus === "posted" ? (
             <>
               <p className="post-result ok">
-                ✅ Posted to eBay
+                ✅ Saved as eBay Draft
                 {group.listingId ? (
                   <>
                     {" "}
                     ·{" "}
                     <a
-                      href={`https://www.ebay.com/itm/${group.listingId}`}
+                      href={`https://www.ebay.com/sh/lst/drafts`}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      View listing ↗
+                      View drafts ↗
                     </a>
                   </>
                 ) : null}
@@ -376,11 +295,11 @@ export function ListingCard({
               >
                 {group.postStatus === "posting" ? (
                   <>
-                    <span className="spinner" aria-hidden="true" /> Posting to
-                    eBay…
+                    <span className="spinner" aria-hidden="true" /> Sending to
+                    Drafts…
                   </>
                 ) : (
-                  "🚀 Post this to eBay"
+                  "🚀 Send to eBay Drafts"
                 )}
               </button>
               {group.postStatus === "error" && group.postError && (
@@ -389,7 +308,7 @@ export function ListingCard({
             </div>
           ) : (
             <p className="post-hint">
-              Connect eBay (top of page) to post this listing.
+              Connect eBay (top of page) to save this draft.
             </p>
           )}
         </fieldset>
