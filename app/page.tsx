@@ -1106,12 +1106,14 @@ export default function Home() {
                   sorting ||
                   Boolean(importProgress)
                 }
-                onClick={() => {
+         onClick={() => {
                   const id = newId();
+                  // Apply the exact same offset logic used in the sorter
+                  const nextNum = skuStart + 1;
                   setGroups([
                     {
                       id,
-                      sku: binPrefix.trim() ? binPrefix.trim() : "Item 1",
+                      sku: binPrefix.trim() ? `${binPrefix.trim()}-${nextNum}` : `Item ${nextNum}`,
                       name: "Single item",
                       photoIds: photos.map((p) => p.id),
                       status: "idle",
