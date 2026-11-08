@@ -567,4 +567,635 @@ function primaryEbayError(r: EbayResp): { errorId: number; message: string } {
       message: String(err.longMessage || err.message || "").trim(),
     };
   }
-  return { errorId: 0, message: (r.text || "").slice(0, 3
+  return { errorId: 0, message: (r.text || "").slice(0, 300) };
+}
+
+function logPublishFailure(stage: string, sku: string, r: EbayResp): void {
+  const { errorId, message } = primaryEbayError(r);
+  console.error(
+    `[ebay/publish] ${stage} failed sku=${sku} http=${r.status} errorId=${errorId || "?"} ${message}`,
+  );
+}
+
+function publishErrorMessage(stage: string, r: EbayResp): string {
+  const { errorId, message } = primaryEbayError(r);
+  const detail = message || `HTTP ${r.status}`;
+  const head = errorId
+    ? `${stage} (eBay error ${errorId}): ${detail}`
+    : `${stage} (${r.status}): ${detail}`;
+  const hint = errorId ? EBAY_ERROR_HINTS[errorId] : undefined;
+  return hint ? `${head} ${hint}` : head;
+}
+
+function extractExistingOfferId(r: EbayResp): string | null {
+  for (const err of r.json?.errors || []) {
+    if (err.errorId === 25002) {
+      for (const p of err.parameters || []) {
+        if (p.name === "offerId") return String(p.value);
+      }
+    }
+  }
+  return null;
+}
+
+function extractMissingAspects(r: EbayResp): string[] {
+  const missing: string[] = [];
+  for (const err of r.json?.errors || []) {
+    const pieces = [err.message, err.longMessage].concat(
+      (err.parameters || []).map((p: any) => String(p.value || "")),
+    );
+    const hay = pieces.join(" | ");
+    const re = /item specific ([^|.,;]+?) is missing/gi;
+    let m;
+    while ((m = re.exec(hay))) {
+      const name = m[1].trim();
+      if (name) missing.push(name);
+    }
+  }
+  return missing;
+}
+
+function addMissingAspects(
+  aspects: Record<string, string[]>,
+  missing: string[],
+  listing: ListingResult,
+): string[] {
+  const added: string[] = [];
+  for (const field of missing) {
+    if (isSizeAspect(field)) continue;
+    const def = ASPECT_DEFAULTS[field] || freeTextDefault(field, listing);
+    if (!def) continue;
+    aspects[field] = [def];
+    added.push(`${field}=${def}`);
+  }
+  return added;
+}
+
+const ASPECT_VALUE_ERROR_RE =
+  /must be|invalid|format|greater than|less than|number|decimal|numeric/i;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function findInvalidValueAspects(
+  r: EbayResp,
+  aspects: Record<string, string[]>,
+): string[] {
+  const hits: string[] = [];
+  for (const err of r.json?.errors || []) {
+    for (const piece of [err.message, err.longMessage]) {
+      const msg = String(piece || "");
+      if (!msg || !ASPECT_VALUE_ERROR_RE.test(msg) || /is missing/i.test(msg))
+        continue;
+      for (const name of Object.keys(aspects)) {
+        if (name.length < 3) continue;
+        const re = new RegExp(`\\b${escapeRegExp(name)}\\b`, "i");
+        if (re.test(msg) && !hits.includes(name)) hits.push(name);
+      }
+    }
+  }
+  return hits;
+}
+
+export function applyInvalidAspectFallback(
+  inventoryItem: { product: { aspects?: Record<string, string[]> } },
+  aspects: Record<string, string[]>,
+  names: string[],
+  sku: string,
+): void {
+  for (const n of names) {
+    console.warn(
+      `[ebay/publish] sku=${sku} eBay rejected the value of aspect "${n}" (${JSON.stringify(
+        aspects[n] ?? [],
+      )}) — retrying without it`,
+    );
+    delete aspects[n];
+  }
+  inventoryItem.product.aspects = aspects;
+}
+
+export function isBrandMpnError(r: EbayResp): boolean {
+  return /BrandMPN/i.test(r.text || "");
+}
+
+export function applyBrandMpnFallback(
+  inventoryItem: {
+    product: {
+      aspects?: Record<string, string[]>;
+      brand?: string;
+      mpn?: string;
+    };
+  },
+  aspects: Record<string, string[]>,
+  listing: ListingResult,
+  sku: string,
+): void {
+  console.warn(
+    `[ebay/publish] sku=${sku} eBay rejected the Brand/MPN pair (<BrandMPN>) — retrying with aspect-level fallbacks`,
+  );
+  delete inventoryItem.product.brand;
+  delete inventoryItem.product.mpn;
+  if (!aspects.Brand?.length) {
+    aspects.Brand = [
+      cleanAspectValue(String(listing.brand || "").trim()) || "Unbranded",
+    ];
+  }
+  if (!aspects.MPN?.length) aspects.MPN = ["Does Not Apply"];
+  inventoryItem.product.aspects = aspects;
+}
+
+export function isShippingPackageError(r: EbayResp): boolean {
+  return (
+    errorIds(r).includes(25101) ||
+    /Invalid\s*<?ShippingPackage/i.test(r.text || "")
+  );
+}
+
+export function applyShippingPackageFallback(
+  inventoryItem: { packageWeightAndSize?: { packageType?: string } },
+  sku: string,
+): void {
+  const pkg = inventoryItem.packageWeightAndSize;
+  if (pkg && pkg.packageType !== SAFE_PACKAGE_TYPE) {
+    console.warn(
+      `[ebay/publish] sku=${sku} eBay rejected packageType ${pkg.packageType} — retrying as ${SAFE_PACKAGE_TYPE}`,
+    );
+    pkg.packageType = SAFE_PACKAGE_TYPE;
+  } else {
+    console.warn(
+      `[ebay/publish] sku=${sku} eBay rejected the shipping package — retrying without packageWeightAndSize`,
+    );
+    delete inventoryItem.packageWeightAndSize;
+  }
+}
+
+function updateOfferBody(
+  offer: Record<string, unknown>,
+): Record<string, unknown> {
+  const skip = new Set(["sku", "marketplaceId", "format"]);
+  return Object.fromEntries(
+    Object.entries(offer).filter(([k]) => !skip.has(k)),
+  );
+}
+
+// ── Photo upload to eBay Picture Services (Media API) ─────────────────────────
+
+async function uploadPhoto(
+  accessToken: string,
+  base64: string,
+  mediaType: string,
+  name: string,
+): Promise<PhotoUpload> {
+  const data = base64.includes(",") ? base64.split(",")[1] : base64;
+  const bytes = Buffer.from(data, "base64");
+  const form = new FormData();
+  form.append(
+    "image",
+    new Blob([new Uint8Array(bytes)], { type: mediaType }),
+    name,
+  );
+  const auth = { Authorization: `Bearer ${accessToken}` };
+  const resp = await boundedFetch(`${EBAY_MEDIA_BASE}/image/create_image_from_file`, {
+    method: "POST",
+    headers: auth,
+    body: form,
+  });
+  if (resp.status !== 201) return { error: await mediaError(resp) };
+  const created = (await resp.json().catch(() => ({}))) as { imageUrl?: string };
+  if (created.imageUrl) return { url: created.imageUrl };
+  const location = resp.headers.get("Location");
+  if (!location) return { error: "eBay did not return the uploaded photo's location." };
+  const image = await boundedFetch(location, { headers: auth });
+  if (!image.ok) return { error: await mediaError(image) };
+  const details = (await image.json().catch(() => ({}))) as { imageUrl?: string };
+  return details.imageUrl
+    ? { url: details.imageUrl }
+    : { error: "eBay did not return the uploaded photo's URL." };
+}
+
+async function mediaError(resp: Response): Promise<string> {
+  const body = (await resp.json().catch(() => null)) as {
+    errors?: { errorId?: number; message?: string; longMessage?: string }[];
+  } | null;
+  const e = body?.errors?.[0];
+  const message = e?.longMessage || e?.message;
+  if (message) return `eBay error${e?.errorId ? ` ${e.errorId}` : ""}: ${message}`;
+  return `eBay returned HTTP ${resp.status}.`;
+}
+
+interface PhotoUpload {
+  url?: string;
+  error?: string;
+}
+
+// ── Policies & location ──────────────────────────────────────────────────────
+
+export interface AccountSetup {
+  fulfillmentPolicyId: string;
+  paymentPolicyId: string;
+  returnPolicyId: string;
+  locationKey: string;
+}
+
+export interface AccountOptions {
+  fulfillment: { id: string; name: string }[];
+  payment: { id: string; name: string }[];
+  returns: { id: string; name: string }[];
+  locations: { id: string; name: string }[];
+}
+export async function fetchAccountOptions(
+  accessToken: string,
+): Promise<AccountOptions> {
+  const mp = "marketplace_id=" + EBAY_MARKETPLACE_ID;
+  const results = await Promise.all([
+    ebayRequest(
+      accessToken,
+      "GET",
+      EBAY_ACC_BASE + "/fulfillment_policy?" + mp,
+    ),
+    ebayRequest(accessToken, "GET", EBAY_ACC_BASE + "/payment_policy?" + mp),
+    ebayRequest(accessToken, "GET", EBAY_ACC_BASE + "/return_policy?" + mp),
+    ebayRequest(accessToken, "GET", EBAY_INV_BASE + "/location?limit=100"),
+  ]);
+  if (results.some((r) => !r.ok))
+    throw new Error(
+      "Could not load all eBay policies and locations. Reconnect or retry.",
+    );
+  const rows = (r: EbayResp, key: string, id: string) =>
+    (r.json?.[key] ?? []).map((x: any) => ({
+      id: String(x[id]),
+      name: String(x.name || x[id]),
+    }));
+  return {
+    fulfillment: rows(results[0], "fulfillmentPolicies", "fulfillmentPolicyId"),
+    payment: rows(results[1], "paymentPolicies", "paymentPolicyId"),
+    returns: (results[2].json?.returnPolicies ?? [])
+      .filter((policy: any) => policy.returnsAccepted === true)
+      .map((policy: any) => ({
+        id: String(policy.returnPolicyId),
+        name: String(policy.name || policy.returnPolicyId),
+      })),
+    locations: (results[3].json?.locations ?? [])
+      .filter((x: any) => x.merchantLocationStatus === "ENABLED")
+      .map((x: any) => ({
+        id: String(x.merchantLocationKey),
+        name: [
+          x.name,
+          x.location?.address?.postalCode,
+          x.location?.address?.country,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      })),
+  };
+}
+
+// ── The full publish flow for one item ───────────────────────────────────────
+
+export interface PublishInput {
+  shipping?: import("@/lib/validation").ShippingSelection;
+  review?: { categoryId: string; expiresAt: number; signature: string };
+  expectedPhotoCount?: number;
+  sku: string;
+  listing: ListingResult;
+  images?: { mediaType: string; data: string }[];
+  imageUrls?: string[];
+}
+
+export function sanitizeEbayImageUrls(urls: unknown): string[] {
+  if (!Array.isArray(urls)) return [];
+  const out: string[] = [];
+  for (const raw of urls) {
+    if (typeof raw !== "string") continue;
+    try {
+      const u = new URL(raw);
+      const host = u.hostname.toLowerCase();
+      const isEps = host === "ebayimg.com" || host.endsWith(".ebayimg.com");
+      if (u.protocol === "https:" && isEps && !out.includes(raw)) out.push(raw);
+    } catch {
+      /* not a URL — skip */
+    }
+  }
+  return out.slice(0, 24);
+}
+
+export interface PublishResult {
+  success: boolean;
+  sku: string;
+  listingId?: string;
+  offerId?: string;
+  error?: string;
+  alreadyListed?: boolean;
+  warnings?: string[];
+}
+
+function strictQualityMode(): boolean {
+  return (
+    process.env.EBAY_STRICT_QUALITY === "1" ||
+    /^true$/i.test(process.env.EBAY_STRICT_QUALITY || "")
+  );
+}
+
+const CL = { "Content-Language": "en-US" };
+
+async function findPublishedOffer(
+  accessToken: string,
+  sku: string,
+): Promise<{ offerId: string; listingId: string } | null> {
+  const r = await ebayRequest(
+    accessToken,
+    "GET",
+    `${EBAY_INV_BASE}/offer?sku=${encodeURIComponent(sku)}&marketplace_id=${EBAY_MARKETPLACE_ID}`,
+  );
+  if (!r.ok) {
+    if (r.status === 404 || errorIds(r).includes(25713)) return null;
+    throw new Error(
+      "Could not verify whether this SKU is already live. Nothing was overwritten; retry later.",
+    );
+  }
+  for (const o of r.json?.offers ?? []) {
+    if (String(o?.status || "").toUpperCase() === "PUBLISHED") {
+      return {
+        offerId: String(o.offerId || ""),
+        listingId: String(o?.listing?.listingId || ""),
+      };
+    }
+  }
+  return null;
+}
+
+export async function uploadPhotos(
+  accessToken: string,
+  images: { mediaType: string; data: string }[],
+  sku: string,
+  nameOffset = 0,
+): Promise<{ urls: string[]; errors: string[] }> {
+  const results: PhotoUpload[] = new Array(images.length).fill({});
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(4, images.length) },
+    async () => {
+      while (cursor < images.length) {
+        const i = cursor++;
+        const name = `${sku}-${nameOffset + i + 1}.jpg`;
+        let r = await uploadPhoto(accessToken, images[i].data, images[i].mediaType, name);
+        if (!r.url)
+          r = await uploadPhoto(accessToken, images[i].data, images[i].mediaType, name);
+        if (!r.url) console.error(`[ebay/upload-photos] ${name} failed: ${r.error}`);
+        results[i] = r;
+      }
+    },
+  );
+  await Promise.all(workers);
+  return {
+    urls: results.flatMap((r) => (r.url ? [r.url] : [])),
+    errors: [...new Set(results.flatMap((r) => (r.url ? [] : [r.error ?? "Unknown error."])))],
+  };
+}
+
+export async function publishListing(
+  accessToken: string,
+  input: PublishInput,
+): Promise<PublishResult> {
+  const sku = skuSchema.parse(input.sku);
+  const listing = parseListing(input.listing);
+  const shipping = shippingSchema.parse(input.shipping);
+  const catId = listing.category_id || "";
+  
+  if (
+    !input.review ||
+    input.review.categoryId !== catId ||
+    !verifyReview(catId, input.review.expiresAt, input.review.signature)
+  )
+    throw new Error("Prepare this category for review before publishing.");
+
+  // eBay's API requires a positive price to create the offer/draft payload.
+  // Since we removed pricing from the UI, we inject a placeholder price here.
+  // You will set the real price when reviewing the draft on eBay.
+  const price = validListingPrice(listing.suggested_price) || 0.99;
+  
+  if (listing.title.length > 80 || !listing.description.trim())
+    throw new Error(
+      "A title of 1–80 characters and a description are required.",
+    );
+    
+  const photoUrls = sanitizeEbayImageUrls(input.imageUrls);
+  if (
+    !Number.isInteger(input.expectedPhotoCount) ||
+    !photoUrls.length ||
+    photoUrls.length !== input.expectedPhotoCount
+  )
+    throw new Error(
+      "Every selected photo must upload before publication. Retry the failed uploads.",
+    );
+    
+  const [meta, accepted, options] = await Promise.all([
+    categoryAspects(catId),
+    acceptedConditionIds(catId, accessToken),
+    fetchAccountOptions(accessToken),
+  ]);
+  
+  if (!meta.length || !accepted.size)
+    throw new Error(
+      "eBay category metadata is unavailable. Your draft is saved; retry later.",
+    );
+    
+  const check = (rows: { id: string }[], id: string) =>
+    rows.some((r) => r.id === id);
+  if (
+    !check(options.fulfillment, shipping.fulfillmentPolicyId) ||
+    !check(options.payment, shipping.paymentPolicyId) ||
+    !check(options.locations, shipping.locationKey)
+  )
+    throw new Error(
+      "A selected shipping policy or location no longer exists. Select it again.",
+    );
+  if (!check(options.returns, shipping.returnPolicyId))
+    throw new Error(
+      "Choose an existing eBay return policy that accepts returns. Reload policies and select it again.",
+    );
+    
+  const condition = listing.ebay_condition || "";
+  if (![...accepted].some((id) => CONDITION_ID_ENUM[id] === condition))
+    throw new Error("Select a condition supported by this category.");
+    
+  const aspects = Object.fromEntries(
+    Object.entries(listing.item_specifics ?? {})
+      .filter(([, v]) => v.trim())
+      .map(([k, v]) => [k, v.split(" | ").map((x) => x.trim())]),
+  );
+  
+  for (const name of snapStandardSizes(aspects, meta))
+    console.warn(
+      `[ebay/publish] sku=${sku} dropped optional "${name}" — not one of eBay's standard values`,
+    );
+    
+  const issues = validateAspects(aspects, meta);
+  if (issues.length) throw new Error(issues.join("; "));
+  
+  const existing = await findPublishedOffer(accessToken, sku);
+  if (existing)
+    return {
+      success: false,
+      sku,
+      alreadyListed: true,
+      ...existing,
+      error:
+        "This SKU is already live. Open the existing listing to confirm the previous attempt before posting again.",
+    };
+    
+  const identifiers = extractProductIdentifiers(listing),
+    brand = realBrand(listing);
+    
+  const inventoryItem = {
+    product: {
+      title: listing.title,
+      description: listing.description,
+      aspects,
+      imageUrls: photoUrls,
+      ...(identifiers.upc ? { upc: [identifiers.upc] } : {}),
+      ...(identifiers.ean ? { ean: [identifiers.ean] } : {}),
+      ...(identifiers.isbn ? { isbn: [identifiers.isbn] } : {}),
+      ...(identifiers.mpn && brand ? { brand, mpn: identifiers.mpn } : {}),
+    },
+    condition,
+    conditionDescription: listing.condition_notes || "",
+    availability: { shipToLocationAvailability: { quantity: 1 } },
+    ...(shipping.weightOz !== undefined || shipping.lengthIn !== undefined
+      ? {
+          packageWeightAndSize: {
+            ...(shipping.weightOz !== undefined
+              ? { weight: { value: shipping.weightOz, unit: "OUNCE" } }
+              : {}),
+            ...(shipping.lengthIn !== undefined
+              ? {
+                  dimensions: {
+                    length: shipping.lengthIn,
+                    width: shipping.widthIn,
+                    height: shipping.heightIn,
+                    unit: "INCH",
+                  },
+                }
+              : {}),
+            packageType: SAFE_PACKAGE_TYPE,
+          },
+        }
+      : {}),
+  };
+  
+  const offerBody = {
+    sku,
+    marketplaceId: EBAY_MARKETPLACE_ID,
+    format: "FIXED_PRICE",
+    listingDescription: listing.description,
+    pricingSummary: {
+      price: { value: price.toFixed(2), currency: EBAY_CURRENCY },
+    },
+    quantityLimitPerBuyer: 1,
+    categoryId: catId,
+    merchantLocationKey: shipping.locationKey,
+    listingPolicies: {
+      fulfillmentPolicyId: shipping.fulfillmentPolicyId,
+      paymentPolicyId: shipping.paymentPolicyId,
+      returnPolicyId: shipping.returnPolicyId,
+    },
+    includeCatalogProductDetails: false,
+  };
+  
+  const prior = await ebayRequest(
+    accessToken,
+    "GET",
+    EBAY_INV_BASE + "/inventory_item/" + encodeURIComponent(sku),
+  );
+  if (!prior.ok && prior.status !== 404 && !errorIds(prior).includes(25713))
+    throw new Error("Could not verify the inventory SKU before writing.");
+  if (prior.ok) {
+    const p = prior.json;
+    if (
+      p?.product?.title !== inventoryItem.product.title ||
+      p?.product?.description !== inventoryItem.product.description ||
+      JSON.stringify(p?.product?.imageUrls) !== JSON.stringify(photoUrls)
+    )
+      throw new Error(
+        "This SKU already contains a different draft. Choose a unique SKU before posting this item.",
+      );
+  }
+  
+  const r = await withTransientRetry(
+    () =>
+      ebayRequest(
+        accessToken,
+        "PUT",
+        EBAY_INV_BASE + "/inventory_item/" + encodeURIComponent(sku),
+        { body: inventoryItem, extraHeaders: CL },
+      ),
+    "inventory item",
+    sku,
+  );
+  
+  if (!r.ok)
+    return {
+      success: false,
+      sku,
+      error: publishErrorMessage(
+        "Inventory item rejected; review the draft",
+        r,
+      ),
+    };
+    
+  const offers = await ebayRequest(
+    accessToken,
+    "GET",
+    EBAY_INV_BASE +
+      "/offer?sku=" +
+      encodeURIComponent(sku) +
+      "&marketplace_id=" +
+      EBAY_MARKETPLACE_ID,
+  );
+  if (!offers.ok && offers.status !== 404 && !errorIds(offers).includes(25713))
+    throw new Error(
+      "Could not confirm the existing offer state. Retry to reconcile before creating an offer.",
+    );
+    
+  const previous = (offers.json?.offers ?? []).find(
+    (o: any) => o.status !== "PUBLISHED" && o.format === "FIXED_PRICE",
+  );
+  let offerId = previous?.offerId;
+  
+  const offerResp = offerId
+    ? await ebayRequest(
+        accessToken,
+        "PUT",
+        EBAY_INV_BASE + "/offer/" + offerId,
+        { body: updateOfferBody(offerBody), extraHeaders: CL },
+      )
+    : await ebayRequest(accessToken, "POST", EBAY_INV_BASE + "/offer", {
+        body: offerBody,
+        extraHeaders: CL,
+      });
+      
+  if (!offerResp.ok)
+    return {
+      success: false,
+      sku,
+      error: publishErrorMessage("Offer rejected; review the draft", offerResp),
+    };
+    
+  offerId = offerId || offerResp.json?.offerId;
+  if (!offerId)
+    throw new Error(
+      "eBay did not return an offer ID. Retry to reconcile the saved draft.",
+    );
+    
+  // CHUNK 3: DRAFTS ONLY WORKFLOW
+  // We purposefully DO NOT call the /publish endpoint here.
+  // The inventory item and offer have been created successfully, which eBay 
+  // treats natively as an "Unpublished Draft" in your Seller Hub.
+  
+  return {
+    success: true,
+    sku,
+    offerId,
+  };
+}
