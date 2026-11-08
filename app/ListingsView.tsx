@@ -257,3 +257,338 @@ export function ListingsView(props: ListingsViewProps) {
               setSelected(new Set(visible.filter(editable).map((g) => g.id)))
             }
           >
+            Select all {visible.filter(editable).length} shown by filter
+          </button>
+          <button type="button" onClick={() => setSelected(new Set())}>
+            Clear selection
+          </button>
+          <span>{chosen.length} selected</span>
+          <label>
+            Shipping for selected{" "}
+            <select
+              aria-label="Shipping for selected"
+              value={bulkShipping}
+              onChange={(e) => setBulkShipping(e.target.value)}
+            >
+              <option value="">Choose policy</option>
+              {options?.fulfillment.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={!chosen.length || !bulkShipping || active}
+            onClick={() => {
+              for (const g of chosen)
+                onGroupEdit(g.id, {
+                  shipping: {
+                    ...g.shipping,
+                    fulfillmentPolicyId: bulkShipping,
+                  },
+                });
+              setBulkNotice(`Shipping updated for ${chosen.length} items.`);
+            }}
+          >
+            Apply shipping
+          </button>
+          <label>
+            Condition for selected{" "}
+            <select
+              aria-label="Condition for selected"
+              value={bulkCondition}
+              onChange={(e) => setBulkCondition(e.target.value)}
+            >
+              <option value="">Choose condition</option>
+              {conditions.map((c) => (
+                <option key={c.value} value={c.value}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            disabled={!chosen.length || !bulkCondition || active}
+            onClick={() => {
+              let count = 0;
+              for (const g of chosen)
+                if (
+                  g.preparation?.conditions.some(
+                    (c) => c.value === bulkCondition,
+                  )
+                ) {
+                  onEdit(g.id, { ebay_condition: bulkCondition });
+                  count++;
+                }
+              setBulkNotice(
+                `Condition updated for ${count} items. ${chosen.length - count} skipped because the category does not support it. Review descriptions for consistency.`,
+              );
+            }}
+          >
+            Apply condition
+          </button>
+        </div>
+      )}
+      {bulkNotice && <p aria-live="polite">{bulkNotice}</p>}
+      {ebayConnected && ready.length > 0 && (
+        <div className="post-all-bar">
+          <span>Review your drafts, then save the ready items.</span>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={active}
+            onClick={() => onPostAll()}
+          >
+            🚀 Send all {ready.length} to eBay Drafts
+          </button>
+          {chosen.length > 0 && (
+            <button
+              type="button"
+              disabled={active || !ready.some((g) => selected.has(g.id))}
+              onClick={() => onPostAll([...selected])}
+            >
+              Send selected ready (
+              {ready.filter((g) => selected.has(g.id)).length})
+            </button>
+          )}
+        </div>
+      )}
+      {table ? (
+        <div className="batch-table-scroll">
+          <table className="batch-table">
+            <colgroup>
+              <col className="col-photo" />
+              <col className="col-title" />
+              <col className="col-size" />
+              <col className="col-condition" />
+              <col className="col-shipping" />
+              <col className="col-status" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Select / photo</th>
+                <th>Title / SKU</th>
+                <th>Size</th>
+                <th>Condition</th>
+                <th>Shipping</th>
+                <th>Status / details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((g) => {
+                const l = g.listing,
+                  locked = !editable(g),
+                  problems = issues(g),
+                  cover = photoById(g.photoIds[0]);
+                return (
+                  <Fragment key={g.id}>
+                    <tr>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${g.sku}`}
+                          checked={selected.has(g.id)}
+                          disabled={locked}
+                          onChange={() => toggle(g.id)}
+                        />
+                        {cover && (
+                          <img
+                            loading="lazy"
+                            src={cover.previewUrl}
+                            alt={g.name}
+                            width="64"
+                            height="64"
+                          />
+                        )}
+                      </td>
+                      <td>
+                        {l ? (
+                          <textarea
+                            aria-label={`Title ${g.sku}`}
+                            value={l.title}
+                            disabled={locked}
+                            onChange={(e) =>
+                              onEdit(g.id, { title: e.target.value })
+                            }
+                          />
+                        ) : (
+                          g.name
+                        )}
+                        <small>
+                          {g.sku}
+                          {l ? ` · ${l.title.length}/80` : ""}
+                        </small>
+                      </td>
+                      <td>
+                        <input
+                          aria-label={`Size ${g.sku}`}
+                          title={l?.size ?? ""}
+                          value={l?.size ?? ""}
+                          disabled={locked}
+                          onChange={(e) =>
+                            onEdit(g.id, { size: e.target.value })
+                          }
+                        />
+                        <small>{l?.item_specifics?.["Size Type"]}</small>
+                        {l?.item_specifics?.["US Shoe Size"] && (
+                          <small>
+                            eBay: US {l.item_specifics["US Shoe Size"]}
+                            {l.item_specifics["Shoe Width"]
+                              ? ` · ${l.item_specifics["Shoe Width"]}`
+                              : ""}
+                          </small>
+                        )}
+                      </td>
+                      <td>
+                        <select
+                          aria-label={`Condition ${g.sku}`}
+                          value={l?.ebay_condition ?? ""}
+                          disabled={locked}
+                          onChange={(e) =>
+                            onEdit(g.id, { ebay_condition: e.target.value })
+                          }
+                        >
+                          <option value="">Choose</option>
+                          {g.preparation?.conditions.map((c) => (
+                            <option key={c.value} value={c.value}>
+                              {c.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <select
+                          aria-label={`Shipping ${g.sku}`}
+                          value={g.shipping?.fulfillmentPolicyId ?? ""}
+                          disabled={locked || !options}
+                          onChange={(e) =>
+                            onGroupEdit(g.id, {
+                              shipping: {
+                                ...g.shipping,
+                                fulfillmentPolicyId: e.target.value,
+                              },
+                            })
+                          }
+                        >
+                          <option value="">Choose</option>
+                          {options?.fulfillment.map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <strong>
+                          {g.postStatus === "posted"
+                            ? "Saved to Drafts"
+                            : g.postStatus === "posting"
+                              ? "Saving…"
+                              : g.status === "writing"
+                                ? "Writing…"
+                                : g.status === "idle"
+                                  ? "Waiting"
+                                  : g.status === "error" ||
+                                      g.postStatus === "error"
+                                    ? "Failed — retry"
+                                    : problems.length
+                                      ? `${problems.length} to fix`
+                                      : "Ready"}
+                        </strong>
+                        {g.error && <small>{g.error}</small>}
+                        {g.postError && <small>{g.postError}</small>}
+                        {g.status === "done" &&
+                          g.postStatus !== "posted" &&
+                          problems.length > 0 && <small>{problems[0]}</small>}
+                        <button
+                          type="button"
+                          aria-expanded={expanded === g.id}
+                          onClick={() =>
+                            setExpanded(expanded === g.id ? null : g.id)
+                          }
+                        >
+                          {expanded === g.id
+                            ? "Close details"
+                            : "Review details"}
+                        </button>
+                      </td>
+                    </tr>
+                    {expanded === g.id && (
+                      <tr>
+                        <td colSpan={6}>{card(g)}</td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="listing-list">{rows.map(card)}</div>
+      )}
+      <div className="batch-toolbar">
+        <button
+          type="button"
+          disabled={currentPage === 0}
+          onClick={() => setPage(currentPage - 1)}
+        >
+          Previous 25
+        </button>
+        <span>
+          {visible.length ? currentPage * 25 + 1 : 0}–
+          {Math.min(visible.length, (currentPage + 1) * 25)} of {visible.length}
+        </span>
+        <button
+          type="button"
+          disabled={currentPage >= lastPage}
+          onClick={() => setPage(currentPage + 1)}
+        >
+          Next 25
+        </button>
+      </div>
+      <div className="result-actions">
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={active}
+          onClick={onBack}
+        >
+          ← Back to items
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          disabled={!done}
+          onClick={() =>
+            downloadFile("ebay-listings.csv", listingsToCsv(groups), "text/csv")
+          }
+        >
+          ⬇️ Download spreadsheet (CSV)
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!done}
+          onClick={() =>
+            downloadFile(
+              "ebay-listings.json",
+              listingsToJson(groups),
+              "application/json",
+            )
+          }
+        >
+          ⬇️ Download all ({done})
+        </button>
+      </div>
+      <p className="footnote">
+        Ready means required fields are filled. Review accuracy before saving.
+        Your usual defaults are applied automatically; change them for
+        exceptions.
+      </p>
+    </section>
+  );
+}
