@@ -80,7 +80,7 @@ async function routeProfile(
       client,
       {
         model: routerModel,
-max_tokens: 300,
+        max_tokens: 300,
         messages: [
           {
             role: "user",
@@ -88,9 +88,7 @@ max_tokens: 300,
               ...imageBlocks,
               {
                 type: "text",
-                text: (body as any).title 
-                  ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user has provided this text: "${(body as any).title}". You MUST use this exact text to identify the item and build the title and specifics.` 
-                  : "Analyze these photos and return the listing JSON now.",
+                text: "Analyze these photos and return the listing JSON now.",
               }
             ]
           }
@@ -111,175 +109,4 @@ max_tokens: 300,
 }
 
 function firstText(resp: Anthropic.Message): string {
-  const block = resp.content.find((b) => b.type === "text");
-  return block && block.type === "text" ? block.text.trim() : "";
-}
-
-async function handle(input: unknown) {
-  let body: AnalyzeRequestBody;
-  try {
-    body = input as AnalyzeRequestBody;
-    imagesSchema.parse(body.images);
-  } catch {
-    return NextResponse.json(
-      { ok: false, error: "Invalid request body." },
-      { status: 400 },
-    );
-  }
-
-  // Validate client-supplied models against the server allowlist; fall back to
-  // the trusted default on anything unknown (prevents billing an arbitrary or
-  // premium model to the owner's key).
-  const analysisModel = resolveModel(body.analysisModel, ANALYSIS_MODEL);
-  const routerModel = resolveModel(body.routerModel, ROUTER_MODEL);
-  // Only 5.x models take the user's effort choice; 4.x requests stay unchanged.
-  const analysisEffort = thinksByDefault(analysisModel)
-    ? { effort: resolveEffort(body.analysisEffort) }
-    : {};
-
-  if (!Array.isArray(body.images) || body.images.length === 0) {
-    return NextResponse.json(
-      { ok: false, error: "Please add at least one photo." },
-      { status: 400 },
-    );
-  }
-
-  const imageBlocks = toImageBlocks(body.images);
-  if (imageBlocks.length === 0) {
-    return NextResponse.json(
-      { ok: false, error: "No readable photos found. Use JPG, PNG, or WebP." },
-      { status: 400 },
-    );
-  }
-
-  let client: Anthropic;
-  try {
-    client = getClient();
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: (e as Error).message },
-      { status: 500 },
-    );
-  }
-
-  try {
-    const deadline = Date.now() + ANALYZE_TIME_BUDGET_MS;
-    const profile = await routeProfile(
-      client,
-      imageBlocks,
-      body.profile,
-      routerModel,
-      deadline,
-    );
-    const systemPrompt = buildProfiledAnalysisPrompt(profile);
-
-    // Retry up to 3 times, mirroring the Python analyze_photos() loop — but
-    // never start an attempt the time budget can't cover.
-    let lastErr: unknown = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const remaining = deadline - Date.now();
-      if (remaining < MIN_CALL_MS) {
-        lastErr =
-          lastErr ??
-          new Error("Analysis ran out of time — the API is slow right now.");
-        break;
-      }
-      try {
-        const resp = await measuredMessage(
-          "analysis",
-          client,
-          {
-            model: analysisModel,
-            max_tokens: 5000,
-            output_config: {
-              format: { type: "json_schema", schema: AI_LISTING_SCHEMA },
-              ...analysisEffort,
-            },
-            // System prompt is large and identical across requests for the same
-            // profile — cache it to cut cost and latency.
-            system: [
-              {
-                type: "text",
-                text: systemPrompt,
-                cache_control: { type: "ephemeral" },
-              },
-            ],
-            messages: [
-              {
-                role: "user",
-                content: [
-                  ...imageBlocks,
-                  {
-                    type: "text",
-                    text: "Analyze these photos and return the listing JSON now.",
-                  },
-                ],
-              },
-            ],
-          },
-          {
-            timeout: Math.min(ANALYSIS_CALL_TIMEOUT_MS, remaining),
-            maxRetries: 0,
-          },
-        );
-        const raw = parseModelJson<Record<string, unknown>>(firstText(resp));
-        const specifics = Array.isArray(raw.specifics) ? raw.specifics : [];
-        const supported = specifics.filter((s) =>
-          acceptedPhotoFact(s, imageBlocks.length),
-        );
-        const listing = parseListing(
-          boundModelListing({
-            ...raw,
-            item_specifics: Object.fromEntries(
-              supported.map((s: any) => [s.name, s.value]),
-            ),
-          }),
-        );
-        listing.description = cleanGeneratedDescription(listing.description);
-        listing.item_profile = profile;
-        listing.evidence = Object.fromEntries(
-          supported.map((s: any) => [s.name, s.photoIndices]),
-        );
-        listing.estimates = Object.fromEntries(
-          supported.filter(isEstimate).map((s) => [s.name, s.confidence ?? 0]),
-        );
-        // Deterministic title cleanup happens HERE, before the seller reviews —
-        // the title on the card is exactly the title that publishes.
-        listing.title = optimizeTitle(listing);
-        // Same principle for the optional storewide markup: applied pre-review,
-        // so the price on the card is exactly the price that publishes.
-        listing.suggested_price = applyPriceMarkup(
-          listing.suggested_price,
-          priceMarkupPercent(),
-        );
-        return NextResponse.json({ ok: true, listing, usage: currentUsage() });
-      } catch (err) {
-        const fatal = anthropicAuthError(err);
-        if (fatal) throw fatal; // auth/billing won't fix itself on retry
-        lastErr = err;
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-        }
-      }
-    }
-    throw lastErr;
-  } catch (e) {
-    if (e instanceof AnthropicAuthError) {
-      console.error("[analyze] auth/billing failure:", e.message);
-      return NextResponse.json(
-        { ok: false, error: e.message },
-        { status: e.status },
-      );
-    }
-    // Name the cause so a repeat failure can be diagnosed from the card.
-    return safeErrorResponse(
-      "analyze",
-      e,
-      `Something went wrong analyzing photos (${validationMessage(e).slice(0, 140)}) — please try again.`,
-    );
-  }
-}
-
-export async function analyzePhotos(input: unknown) {
-  return (await collectUsage(() => handle(input))).result;
-}
+  const block = resp.content.find
