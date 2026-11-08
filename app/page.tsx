@@ -544,6 +544,7 @@ export default function Home() {
           analysisModel: getAnalysisModel() ?? undefined,
           routerModel: getSortModel() ?? undefined,
           analysisEffort: getAnalysisEffort() ?? undefined,
+          title: group.name,
         });
         const data = (await readJson(res)) as AnalyzeResponse;
         if (!data.ok || !data.listing) {
