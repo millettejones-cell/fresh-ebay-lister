@@ -252,7 +252,7 @@ async function handle(input: unknown) {
                   {
                     type: "text",
                     text: rawWildcardText 
-                      ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user identified this as "${rawWildcardText}". You MUST use these EXACT words in the title. DO NOT substitute words or use synonyms (e.g., do NOT change "rattle" to "bell", and do not invent clappers). You MUST place this item in a category appropriate for exactly what the user called it.` 
+                      ? `Analyze these photos and return the listing JSON now. CONTEXT: The user provided this note: "${rawWildcardText}". Use this to help identify the item and its condition, but DO NOT force this exact text into the title. Optimize the title normally based on your strict 80-character system rules.` 
                       : "Analyze these photos and return the listing JSON now.",
                   },
                 ],
