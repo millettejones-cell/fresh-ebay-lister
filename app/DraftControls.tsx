@@ -8,11 +8,13 @@ import { loadAccountOptions } from "@/lib/account-options-client";
 import { apiPost } from "@/lib/api-client";
 import { draftIssues } from "@/lib/client-review";
 import { isStandardSizeAspect } from "@/lib/ebay/aspects";
+
 interface Props {
   group: ItemGroup;
   photoById: (id: string) => Photo | undefined;
   onGroupEdit: (id: string, patch: Partial<ItemGroup>) => void;
 }
+
 export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<AccountOptions>();
@@ -20,14 +22,19 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
   const latest = useRef(g);
   latest.current = g;
   const defaultsRequested = useRef(false);
+
+  // We keep this running silently in the background so the draft payload 
+  // has policies attached to satisfy eBay's servers, even though they are hidden from you.
   useEffect(() => {
     if (g.listing && !defaultsRequested.current) {
       defaultsRequested.current = true;
       void loadOptions();
     }
   }, [Boolean(g.listing)]);
+
   if (!g.listing) return null;
   const l = g.listing;
+
   const edit = (patch: Partial<typeof l>) => {
     const next = { ...l, ...patch };
     if (patch.item_specifics) {
@@ -54,15 +61,15 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
       comps: undefined,
     });
   };
+
   const specifics = l.item_specifics ?? {};
-  // Empty required specifics block publishing; empty recommended ones hurt
-  // search. Both are flagged and listed first so they're easy to find.
   const missingLevel = (name: string): "required" | "recommended" | "" => {
     if ((specifics[name] ?? "").trim()) return "";
     const meta = g.preparation?.aspects.find((a) => a.name === name);
     if (meta?.required) return "required";
     return meta?.usage === "RECOMMENDED" ? "recommended" : "";
   };
+
   const rank = { required: 0, recommended: 1, "": 2 };
   const names = [
     ...new Set([
@@ -72,10 +79,12 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
       ...Object.keys(specifics),
     ]),
   ].sort((a, b) => rank[missingLevel(a)] - rank[missingLevel(b)]);
+
   const missingRequired = names.filter((n) => missingLevel(n) === "required");
   const missingRecommended = names.filter(
     (n) => missingLevel(n) === "recommended",
   );
+
   async function prepare() {
     setBusy(true);
     setError("");
@@ -109,6 +118,7 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
       setBusy(false);
     }
   }
+
   async function loadOptions(refresh = false) {
     setBusy(true);
     setError("");
@@ -125,26 +135,7 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
       setBusy(false);
     }
   }
-  async function research() {
-    setBusy(true);
-    setError("");
-    onGroupEdit(g.id, { compsStatus: "loading", comps: undefined });
-    try {
-      const r = await apiPost("/api/ebay/comps", { listing: l });
-      const d = await r.json();
-      if (latest.current.listing !== l) return;
-      onGroupEdit(g.id, {
-        comps: d.comps,
-        compsStatus: d.comps?.ok ? "ready" : "unavailable",
-      });
-      if (!d.ok) throw new Error(d.error);
-    } catch (e) {
-      setError((e as Error).message);
-      onGroupEdit(g.id, { compsStatus: "unavailable" });
-    } finally {
-      setBusy(false);
-    }
-  }
+
   return (
     <fieldset
       disabled={busy || g.postStatus === "posted" || g.postStatus === "posting"}
@@ -398,135 +389,91 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
           ) : null;
         })}
       </details>
+      
+      {/* Redesigned Dimensions block */}
       <details open>
-        <summary>Shipping and returns</summary>
+        <summary>Package weight and dimensions (optional)</summary>
         <p className="note">
-          USPS Ground Advantage · flat buyer charge · 2 business days handling.
-          Usually $7.95 for tees, shirts, blouses, lightweight pants, sandals
-          and light shoes without boxes; $9.95 for heavier shoes, sweaters,
-          jackets and jeans. Select the existing eBay policy you want for this
-          item.
+          Leave blank for flat-fee shipping. Quietly uses your default shipping policies in the background.
         </p>
-        <p className="note">
-          Your usual $7.95 shipping, Managed Payments, returns-accepted policy
-          and shipping origin are selected automatically when available. Change
-          any selection for this item.
-        </p>
-        {options && options.returns.length === 0 && (
-          <p className="note-error">
-            No returns-accepted policy was found. Check your eBay return policy,
-            then reload policies here.
-          </p>
-        )}
-        <button type="button" onClick={() => void loadOptions(true)}>
-          Load my eBay policies and locations
-        </button>
-        {(
-          [
-            ["fulfillment", "fulfillmentPolicyId", "Shipping policy"],
-            ["payment", "paymentPolicyId", "Payment policy"],
-            ["returns", "returnPolicyId", "Return policy"],
-            ["locations", "locationKey", "Shipping origin"],
-          ] as const
-        ).map(([kind, key, label]) => (
-          <label key={key}>
-            {label}
-            <select
-              aria-label={label}
-              value={g.shipping?.[key] ?? ""}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1rem", marginTop: "0.5rem" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: "4px", maxWidth: "150px" }}>
+            <strong>Weight (oz)</strong>
+            <input
+              aria-label="Packed weight (oz)"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={g.shipping?.weightOz ?? ""}
               onChange={(e) =>
                 onGroupEdit(g.id, {
-                  shipping: { ...g.shipping, [key]: e.target.value },
+                  shipping: {
+                    ...g.shipping,
+                    weightOz: e.target.value === "" ? undefined : Number(e.target.value),
+                  },
                 })
               }
-            >
-              <option value="">Select…</option>
-              {!options && g.shipping?.[key] && (
-                <option value={g.shipping[key]}>
-                  {g.shipping[key]} (saved)
-                </option>
-              )}
-              {options?.[kind].map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
+            />
           </label>
-        ))}
-        <details>
-          <summary>Package weight and dimensions (optional)</summary>
-          <p className="note">
-            Leave blank for your flat-fee shipping. No package measurements will
-            be sent unless you enter them.
-          </p>
-          {(
-            [
-              ["weightOz", "Packed weight (oz)"],
-              ["lengthIn", "Length (in)"],
-              ["widthIn", "Width (in)"],
-              ["heightIn", "Height (in)"],
-            ] as const
-          ).map(([key, label]) => (
-            <label key={key}>
-              {label}
+          <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: "80px", maxWidth: "120px" }}>
+              <strong>Length (in)</strong>
               <input
-                aria-label={label}
+                aria-label="Length (in)"
                 type="number"
                 min="0.01"
                 step="0.01"
-                value={g.shipping?.[key] ?? ""}
+                value={g.shipping?.lengthIn ?? ""}
                 onChange={(e) =>
                   onGroupEdit(g.id, {
                     shipping: {
                       ...g.shipping,
-                      [key]:
-                        e.target.value === ""
-                          ? undefined
-                          : Number(e.target.value),
+                      lengthIn: e.target.value === "" ? undefined : Number(e.target.value),
                     },
                   })
                 }
               />
             </label>
-          ))}
-        </details>
-        {!options?.locations.length && options && (
-          <p>
-            Create an inventory location with your real address in eBay before
-            publishing.
-          </p>
-        )}
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: "80px", maxWidth: "120px" }}>
+              <strong>Width (in)</strong>
+              <input
+                aria-label="Width (in)"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={g.shipping?.widthIn ?? ""}
+                onChange={(e) =>
+                  onGroupEdit(g.id, {
+                    shipping: {
+                      ...g.shipping,
+                      widthIn: e.target.value === "" ? undefined : Number(e.target.value),
+                    },
+                  })
+                }
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "4px", flex: 1, minWidth: "80px", maxWidth: "120px" }}>
+              <strong>Height (in)</strong>
+              <input
+                aria-label="Height (in)"
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={g.shipping?.heightIn ?? ""}
+                onChange={(e) =>
+                  onGroupEdit(g.id, {
+                    shipping: {
+                      ...g.shipping,
+                      heightIn: e.target.value === "" ? undefined : Number(e.target.value),
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+        </div>
       </details>
-      <button type="button" onClick={research}>
-        Refresh comparable asking prices
-      </button>
-      {g.compsStatus && g.compsStatus !== "ready" && (
-        <p>
-          Market research: {g.compsStatus}. The AI price is an unverified
-          estimate.
-        </p>
-      )}
-      {g.comps?.sources && (
-        <details>
-          <summary>Inspect comparable sources · {g.comps.matchBasis}</summary>
-          <p>
-            Checked {g.comps.checkedAt}. Asking prices are not sold prices.
-            Verify identity, condition and accessories.
-          </p>
-          {g.comps.sources.map((s) => (
-            <p key={s.id}>
-              <a href={s.url} target="_blank" rel="noreferrer">
-                {s.title}
-              </a>{" "}
-              — ${s.price.toFixed(2)} +{" "}
-              {s.shipping === undefined
-                ? "unknown shipping"
-                : `$${s.shipping.toFixed(2)} shipping`}
-            </p>
-          ))}
-        </details>
-      )}
+
       {!!g.usage?.length && (
         <p>
           AI usage so far:{" "}
