@@ -1084,6 +1084,9 @@ export async function publishListing(
       : {}),
   };
   
+// CHUNK 5: Dynamic 50% Auto-Decline Calculation
+  const declinePrice = (price * 0.50).toFixed(2);
+
   const offerBody = {
     sku,
     marketplaceId: EBAY_MARKETPLACE_ID,
@@ -1099,6 +1102,10 @@ export async function publishListing(
       fulfillmentPolicyId: shipping.fulfillmentPolicyId,
       paymentPolicyId: shipping.paymentPolicyId,
       returnPolicyId: shipping.returnPolicyId,
+      bestOfferTerms: {
+        bestOfferEnabled: true,
+        autoDeclinePrice: { value: declinePrice, currency: EBAY_CURRENCY }
+      }
     },
     includeCatalogProductDetails: false,
   };
