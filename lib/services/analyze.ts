@@ -113,6 +113,46 @@ function firstText(resp: Anthropic.Message): string {
   return block && block.type === "text" ? block.text.trim() : "";
 }
 
+// CHUNK 4: Dynamic Description Template Builder
+// This function takes the AI's core summary, checks the wildcard text,
+// applies the static condition baseline, and glues the standard footer to the bottom.
+function buildFinalDescription(
+  aiDescription: string,
+  wildcardText: string | undefined,
+  condition: string | undefined,
+): string {
+  // 1. Core Item Overview (cleaned AI output)
+  const overview = cleanGeneratedDescription(aiDescription);
+  
+  // 2. Conditional Wildcard Logic vs Static Baseline
+  let conditionText = "";
+  if (wildcardText && wildcardText.trim().length > 0) {
+    // Override State: Inject the exact custom note
+    conditionText = wildcardText.trim();
+  } else {
+    // Default State: Build the standard baseline
+    const conditionLabels: Record<string, string> = {
+      NEW_WITH_TAGS: "New with tags",
+      NEW_NO_TAGS: "New without tags",
+      NEW_WITH_DEFECTS: "New with defects",
+      EXCELLENT: "Pre-owned in excellent condition",
+      VERY_GOOD: "Pre-owned in very good condition",
+      GOOD: "Pre-owned in good condition",
+      FAIR: "Pre-owned in fair condition",
+      FOR_PARTS_OR_NOT_WORKING: "For parts or not working",
+    };
+    
+    const conditionPrefix = conditionLabels[condition ?? "GOOD"] || "Used";
+    conditionText = `${conditionPrefix} with expected wear unless otherwise noted. Please review all photos carefully to inspect actual condition and verify the exact item to be received.`;
+  }
+  
+  // 3. Footer Standardization
+  const footerText = "Please review all photos for complete details and condition. Feel free to reach out with any questions prior to purchasing!";
+
+  // 4. Template Composition (Double line breaks between sections)
+  return `${overview}\n\n${conditionText}\n\n${footerText}`;
+}
+
 async function handle(input: unknown) {
   let body: AnalyzeRequestBody;
   try {
@@ -174,6 +214,8 @@ async function handle(input: unknown) {
     // Retry up to 3 times, mirroring the Python analyze_photos() loop — but
     // never start an attempt the time budget can't cover.
     let lastErr: unknown = null;
+    const rawWildcardText = (body as any).title; // Extract the user's wildcard text for our template builder
+
     for (let attempt = 0; attempt < 3; attempt++) {
       const remaining = deadline - Date.now();
       if (remaining < MIN_CALL_MS) {
@@ -209,8 +251,8 @@ async function handle(input: unknown) {
                   ...imageBlocks,
                   {
                     type: "text",
-                    text: (body as any).title 
-                      ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user identified this as "${(body as any).title}". You MUST use these EXACT words in the title. DO NOT substitute words or use synonyms (e.g., do NOT change "rattle" to "bell", and do not invent clappers). You MUST place this item in a category appropriate for exactly what the user called it.` 
+                    text: rawWildcardText 
+                      ? `Analyze these photos and return the listing JSON now. CRITICAL INSTRUCTION: The user identified this as "${rawWildcardText}". You MUST use these EXACT words in the title. DO NOT substitute words or use synonyms (e.g., do NOT change "rattle" to "bell", and do not invent clappers). You MUST place this item in a category appropriate for exactly what the user called it.` 
                       : "Analyze these photos and return the listing JSON now.",
                   },
                 ],
@@ -235,7 +277,14 @@ async function handle(input: unknown) {
             ),
           }),
         );
-        listing.description = cleanGeneratedDescription(listing.description);
+        
+        // CHUNK 4: Route the AI description through our custom template builder
+        listing.description = buildFinalDescription(
+          listing.description,
+          rawWildcardText,
+          listing.condition
+        );
+        
         listing.item_profile = profile;
         listing.evidence = Object.fromEntries(
           supported.map((s: any) => [s.name, s.photoIndices]),
