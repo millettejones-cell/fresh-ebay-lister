@@ -71,10 +71,10 @@ export function DraftControls({ group: g, photoById, onGroupEdit }: Props) {
   };
 
   const rank = { required: 0, recommended: 1, "": 2 };
-  const names = [
+const names = [
     ...new Set([
       ...(g.preparation?.aspects ?? [])
-        .filter((a) => a.required || a.usage === "RECOMMENDED")
+        .filter((a) => a.required) // We removed `|| a.usage === "RECOMMENDED"` here!
         .map((a) => a.name),
       ...Object.keys(specifics),
     ]),
