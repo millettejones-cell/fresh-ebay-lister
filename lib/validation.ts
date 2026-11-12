@@ -83,10 +83,10 @@ export const skuSchema = z
   );
 export const shippingSchema = z
   .object({
-    fulfillmentPolicyId: z.string().min(1).max(100),
-    paymentPolicyId: z.string().min(1).max(100),
-    returnPolicyId: z.string().min(1).max(100),
-    locationKey: z.string().min(1).max(100),
+    fulfillmentPolicyId: z.string().min(1).max(100).optional(),
+    paymentPolicyId: z.string().min(1).max(100).optional(),
+    returnPolicyId: z.string().min(1).max(100).optional(),
+    locationKey: z.string().min(1).max(100).optional(),
     weightOz: z.number().finite().positive().max(2400).optional(),
     lengthIn: z.number().finite().positive().max(200).optional(),
     widthIn: z.number().finite().positive().max(200).optional(),
@@ -122,11 +122,4 @@ export function boundModelListing(
     ]),
   );
 }
-export function validationMessage(error: unknown): string {
-  if (error instanceof z.ZodError)
-    return error.issues
-      .slice(0, 5)
-      .map((i) => `${i.path.join(".") || "Request"}: ${i.message}`)
-      .join("; ");
-  return error instanceof Error ? error.message : "Invalid data.";
-}
+export function validationMessage(error:
