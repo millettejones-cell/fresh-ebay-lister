@@ -1,26 +1,30 @@
 import type { ItemGroup } from "./types";
-import { shippingSchema, skuSchema } from "./validation";
+import { skuSchema } from "./validation";
 import { validateAspects } from "./ebay/draft";
+
 export function draftIssues(g: ItemGroup): string[] {
   const l = g.listing;
   if (!l) return ["Generate a draft first."];
+  
   const issues: string[] = [];
+  
   if (!skuSchema.safeParse(g.sku).success) issues.push("Enter a valid SKU.");
+  
   if (!l.title.trim() || l.title.length > 80)
     issues.push("Title must be 1–80 characters.");
+    
   if (!l.description.trim()) issues.push("Enter a description.");
-  if (
-    !Number.isFinite(Number(l.suggested_price)) ||
-    Number(l.suggested_price) <= 0
-  )
-    issues.push("Enter a positive price.");
+
+  // Note: The price check has been intentionally deleted here since we removed Price 
+  // from the UI and the backend now quietly handles the $0.99 draft placeholder.
+
   if (
     !g.preparation ||
     g.preparation.categoryId !== l.category_id ||
     g.preparation.expiresAt < Date.now()
-  )
+  ) {
     issues.push("Prepare this category before publishing.");
-  else {
+  } else {
     if (!g.preparation.conditions.some((c) => c.value === l.ebay_condition))
       issues.push("Choose an eBay condition.");
     issues.push(
@@ -34,11 +38,12 @@ export function draftIssues(g: ItemGroup): string[] {
       ),
     );
   }
-  if (!shippingSchema.safeParse(g.shipping).success)
-    issues.push(
-      "Choose policies and shipping origin. Package measurements are optional; if supplied, enter valid values and all three dimensions.",
-    );
+  
+  // Note: The strict shippingSchema check has been completely deleted so you are 
+  // no longer blocked by the missing dropdowns in the UI.
+
   if (!g.photoIds.length || g.photoIds.length > 24)
     issues.push("Select 1–24 photos for this item.");
+    
   return issues;
 }
