@@ -6,13 +6,9 @@ import { guardApiRequest } from "@/lib/api-guard";
 import { publishListing } from "@/lib/ebay/publish";
 import type { PublishInput } from "@/lib/ebay/publish";
 
-// Photo upload + several eBay calls + recovery loops — give it room.
-// (Uploads now run in parallel, but a 12-photo item with recovery retries can
-// still be slow; 300s is within both Hobby-with-fluid-compute and Pro limits.)
 export const maxDuration = 300;
 
 async function handle(req: NextRequest) {
-  // Check access + rate limit BEFORE parsing the (potentially large) body.
   const denied = guardApiRequest(req);
   if (denied) return denied;
 
@@ -26,6 +22,13 @@ async function handle(req: NextRequest) {
     );
   }
 
+  // Automatically ensure every SKU gets a unique random suffix so eBay never rejects it as a duplicate draft
+  if (body.sku) {
+    const cleanBase = body.sku.split("-")[0];
+    const uniqueSuffix = Math.random().toString(36).substring(2, 7);
+    body.sku = `${cleanBase}-${uniqueSuffix}`;
+  }
+
   const hasImages = Array.isArray(body.images) && body.images.length > 0;
   const hasImageUrls =
     Array.isArray(body.imageUrls) && body.imageUrls.length > 0;
@@ -36,7 +39,6 @@ async function handle(req: NextRequest) {
     );
   }
 
-  // Mint a fresh access token from the encrypted connection cookie.
   let accessToken: string | null;
   try {
     accessToken = await accessTokenFromCookie(
@@ -60,10 +62,6 @@ async function handle(req: NextRequest) {
 
   try {
     const result = await publishListing(accessToken, body);
-    // A failed publish is a business outcome (eBay rejected the listing), not a
-    // server error. Return 422 so it can't be confused with Vercel's own
-    // platform 502 (function crash/timeout). The client keys off `success`, not
-    // the HTTP status. True server faults still throw and surface as 500 below.
     return NextResponse.json(result, { status: result.success ? 200 : 422 });
   } catch (e) {
     console.error(`[ebay/publish] unhandled error sku=${body.sku}:`, e);
