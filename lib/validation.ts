@@ -122,4 +122,11 @@ export function boundModelListing(
     ]),
   );
 }
-export function validationMessage(error:
+export function validationMessage(error: unknown): string {
+  if (error instanceof z.ZodError)
+    return error.issues
+      .slice(0, 5)
+      .map((i) => `${i.path.join(".") || "Request"}: ${i.message}`)
+      .join("; ");
+  return error instanceof Error ? error.message : "Invalid data.";
+}
