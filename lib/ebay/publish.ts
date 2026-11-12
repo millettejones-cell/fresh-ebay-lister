@@ -712,7 +712,13 @@ export async function publishListing(
   accessToken: string,
   input: PublishInput,
 ): Promise<PublishResult> {
-  const sku = skuSchema.parse(input.sku);
+  let sku = skuSchema.parse(input.sku);
+  
+  // Automatically append a clean short timestamp/random suffix if it's a standard retry or generic SKU to avoid eBay collision errors
+  if (!sku.includes("-") || sku.length < 3) {
+    const randomSuffix = Math.random().toString(36).substring(2, 6);
+    sku = `${sku}-${randomSuffix}`;
+  }
   const listing = parseListing(input.listing);
   const shippingInput = input.shipping || {};
   const catId = listing.category_id || "";
