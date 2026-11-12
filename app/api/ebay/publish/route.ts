@@ -22,12 +22,9 @@ async function handle(req: NextRequest) {
     );
   }
 
-  // Automatically ensure every SKU gets a unique random suffix so eBay never rejects it as a duplicate draft
-  if (body.sku) {
-    const cleanBase = body.sku.split("-")[0];
-    const uniqueSuffix = Math.random().toString(36).substring(2, 7);
-    body.sku = `${cleanBase}-${uniqueSuffix}`;
-  }
+  // FORCE a brand new unique SKU every single time, ignoring whatever stale value the UI form passes
+  const randomSuffix = Math.random().toString(36).substring(2, 7);
+  body.sku = `BX6-${randomSuffix}`;
 
   const hasImages = Array.isArray(body.images) && body.images.length > 0;
   const hasImageUrls =
