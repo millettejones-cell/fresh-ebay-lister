@@ -960,7 +960,7 @@ export async function publishListing(
 ): Promise<PublishResult> {
   const sku = skuSchema.parse(input.sku);
   const listing = parseListing(input.listing);
-  const shipping = shippingSchema.parse(input.shipping);
+  const shipping = shippingSchema.parse(input.shipping || {});
   const catId = listing.category_id || "";
   
   if (
@@ -1001,8 +1001,10 @@ export async function publishListing(
       "eBay category metadata is unavailable. Your draft is saved; retry later.",
     );
     
-  const check = (rows: { id: string }[], id: string) =>
-    rows.some((r) => r.id === id);
+  // FIX: Allow undefined IDs by returning true if the ID is missing
+  const check = (rows: { id: string }[], id?: string) =>
+    id === undefined || rows.some((r) => r.id === id);
+    
   if (
     !check(options.fulfillment, shipping.fulfillmentPolicyId) ||
     !check(options.payment, shipping.paymentPolicyId) ||
@@ -1087,6 +1089,18 @@ export async function publishListing(
 // CHUNK 5: Dynamic 50% Auto-Decline Calculation
   const declinePrice = (price * 0.50).toFixed(2);
 
+  // FIX: Strip the listingPolicies object entirely if the IDs are undefined, 
+  // otherwise the eBay API rejects the payload
+  const listingPolicies: Record<string, any> = {
+    bestOfferTerms: {
+      bestOfferEnabled: true,
+      autoDeclinePrice: { value: declinePrice, currency: EBAY_CURRENCY }
+    }
+  };
+  if (shipping.fulfillmentPolicyId) listingPolicies.fulfillmentPolicyId = shipping.fulfillmentPolicyId;
+  if (shipping.paymentPolicyId) listingPolicies.paymentPolicyId = shipping.paymentPolicyId;
+  if (shipping.returnPolicyId) listingPolicies.returnPolicyId = shipping.returnPolicyId;
+
   const offerBody = {
     sku,
     marketplaceId: EBAY_MARKETPLACE_ID,
@@ -1097,16 +1111,8 @@ export async function publishListing(
     },
     quantityLimitPerBuyer: 1,
     categoryId: catId,
-    merchantLocationKey: shipping.locationKey,
-    listingPolicies: {
-      fulfillmentPolicyId: shipping.fulfillmentPolicyId,
-      paymentPolicyId: shipping.paymentPolicyId,
-      returnPolicyId: shipping.returnPolicyId,
-      bestOfferTerms: {
-        bestOfferEnabled: true,
-        autoDeclinePrice: { value: declinePrice, currency: EBAY_CURRENCY }
-      }
-    },
+    ...(shipping.locationKey ? { merchantLocationKey: shipping.locationKey } : {}),
+    listingPolicies,
     includeCatalogProductDetails: false,
   };
   
