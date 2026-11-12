@@ -49,8 +49,8 @@ type Step = "upload" | "review" | "listings";
 // chunk's thumbnail payload stays under Vercel's 4.5 MB body limit — then
 // reviewed together; items crossing a chunk boundary may need manual merging.
 const MAX_PHOTOS = 1000;
-const SORT_CHUNK = 100;
-const WRITE_CONCURRENCY = 3;
+const SORT_CHUNK = 40;
+const WRITE_CONCURRENCY = 2; // Lowered to 2 to prevent memory spikes on large batches
 // eBay accepts at most 24 photos per listing. They ship to eBay in small
 // batches (lib/uploadBatches.ts) before publish, so no single request ever
 // nears Vercel's 4.5 MB body limit.
@@ -120,6 +120,7 @@ export default function Home() {
       })
     | null
   >(null);
+
   async function startQueue(
     ids: string[],
     kind: "write" | "post",
@@ -142,6 +143,7 @@ export default function Home() {
       );
     }
   }
+
   const inputRef = useRef<HTMLInputElement>(null);
   const importing = useRef(false);
   const [importProgress, setImportProgress] = useState("");
@@ -202,7 +204,7 @@ export default function Home() {
       release();
     };
   }, []);
-  // Mark changed work unsaved before paint; older save completions cannot clear it.
+
   useLayoutEffect(() => {
     if (!restored || readOnly) return;
     let current = true;
@@ -243,13 +245,11 @@ export default function Home() {
     step,
   ]);
 
-  // Latest groups, readable inside async workers without stale closures.
   const groupsRef = useRef(groups);
   useEffect(() => {
     groupsRef.current = groups;
   }, [groups]);
 
-  // Keep eBay connection status in sync (also after the connect bar updates).
   useEffect(() => {
     const check = () =>
       fetch("/api/ebay/status", { cache: "no-store" })
@@ -266,7 +266,6 @@ export default function Home() {
     };
   }, []);
 
-  // ── Upload ──────────────────────────────────────────────
   const addFiles = useCallback(
     async (fileList: FileList | null) => {
       if (!fileList || fileList.length === 0 || importing.current) return;
@@ -317,13 +316,11 @@ export default function Home() {
     void addFiles(e.dataTransfer.files);
   };
 
-  // ── Sort ────────────────────────────────────────────────
   const sort = async () => {
     if (photos.length === 0) return;
     setSorting(true);
     setError(null);
     try {
-      // Continue bin lettering after any SKUs already on eBay for this bin.
       let skuOffset = 0;
       if (binPrefix.trim()) {
         try {
@@ -339,11 +336,10 @@ export default function Home() {
             skuOffset = d.nextIndex as number;
           }
         } catch {
-          /* not connected or lookup failed — start at A like before */
+          /* not connected or lookup failed */
         }
       }
 
-      // Sort in chunks so each request's thumbnail payload stays small.
       type RawGroup = { name: string; photoIds: string[] };
       const chunkResults: RawGroup[][] = [];
       const orphanIdsAll: string[] = [];
@@ -355,7 +351,6 @@ export default function Home() {
           );
         }
         const res = await apiPost("/api/sort", {
-          // Use the small thumbnail for sorting to keep the payload small.
           images: chunk.map((p) => ({
             mediaType: p.mediaType,
             data: p.previewUrl.split(",")[1],
@@ -385,19 +380,20 @@ export default function Home() {
         );
       }
 
-      // Cross-chunk identity requires review; never join physical items from one thumbnail.
       const merged: RawGroup[] = chunkResults.flat();
       const assigned = new Set<string>();
       merged.forEach((g) => g.photoIds.forEach((id) => assigned.add(id)));
       orphanIdsAll.forEach((id) => assigned.add(id));
-      // Any photo the sorter never placed shouldn't vanish — surface it.
       const leftover = photos
         .filter((p) => !assigned.has(p.id))
         .map((p) => p.id);
 
       const nextGroups: ItemGroup[] = merged.map((g, i) => ({
         id: newId(),
-        sku: binPrefix.trim() ? (merged.length > 1 || skuOffset > 0 ? `${binPrefix.trim()} - ${skuOffset + i + 1}` : binPrefix.trim()) : `Item ${skuOffset + i + 1}`,
+        // FIX: Removed spaces around the hyphen to generate "BX6-1" instead of "BX6 - 1"
+        sku: binPrefix.trim() 
+          ? (merged.length > 1 || skuOffset > 0 ? `${binPrefix.trim()}-${skuOffset + i + 1}` : binPrefix.trim()) 
+          : `Item ${skuOffset + i + 1}`,
         name: g.name,
         photoIds: g.photoIds,
         status: "idle",
@@ -414,7 +410,6 @@ export default function Home() {
     }
   };
 
-  // ── Review edits ────────────────────────────────────────
   const rename = (groupId: string, name: string) =>
     setGroups((prev) =>
       prev.map((g) => (g.id === groupId ? { ...g, name } : g)),
@@ -441,8 +436,6 @@ export default function Home() {
               ? g.photoIds
               : [...g.photoIds, photoId]
             : g.photoIds.filter((id) => id !== photoId);
-        // A gained/lost photo invalidates an already-written listing — reset
-        // it so "Write all listings" knows to redo this one (and only this one).
         const changed = nextIds.length !== g.photoIds.length;
         return {
           ...g,
@@ -467,9 +460,6 @@ export default function Home() {
     });
   };
 
-  // Reorder photos within a group. The array order is the eBay photo order
-  // (index 0 = cover/gallery image), so this is all that's needed — `writeGroup`
-  // and `postGroup` re-derive their image order from `photoIds` at call time.
   const reorderPhoto = (
     groupId: string,
     fromIndex: number,
@@ -514,24 +504,39 @@ export default function Home() {
       ...prev,
       {
         id: newId(),
-        sku: binPrefix.trim() ? `${binPrefix.trim()} - ${skuStart + prev.length + 1}` : `Item ${skuStart + prev.length + 1}`,
+        // FIX: Removed spaces around the hyphen here as well
+        sku: binPrefix.trim() ? `${binPrefix.trim()}-${skuStart + prev.length + 1}` : `Item ${skuStart + prev.length + 1}`,
         name: `new-item-${prev.length + 1}`,
         photoIds: [],
         status: "idle",
       },
     ]);
 
-  // ── Write listings ──────────────────────────────────────
   const writeGroup = useCallback(
     async (groupId: string) => {
-      // Snapshot this group's photos from the latest state (no stale closure).
       const group = groupsRef.current.find((g) => g.id === groupId);
       if (!group || group.cloudBatchId || inFlight.current.has(groupId)) return;
       inFlight.current.add(groupId);
+
+      // FIX: Vercel 4.5 MB Payload Limiter
+      // Tracks the size of the image payload. If it crosses ~3.8 MB, it seamlessly 
+      // swaps the remaining images to compressed thumbnails so the AI can still see 
+      // them without crashing the server.
+      let payloadSize = 0;
       const imgs = (group.analysisPhotoIds ?? group.photoIds)
         .map((id) => photoMap.get(id))
         .filter((p): p is Photo => Boolean(p) && p!.analysisSelected !== false)
-        .map((p) => ({ mediaType: p.mediaType, data: p.data }));
+        .map((p) => {
+          const mainSize = p.data.length;
+          if (payloadSize + mainSize > 3800000) {
+            const thumbData = p.previewUrl.split(",")[1];
+            payloadSize += thumbData.length;
+            return { mediaType: p.mediaType, data: thumbData };
+          }
+          payloadSize += mainSize;
+          return { mediaType: p.mediaType, data: p.data };
+        });
+
       setGroups((prev) =>
         prev.map((g) =>
           g.id === groupId ? { ...g, status: "writing", error: undefined } : g,
@@ -568,7 +573,6 @@ export default function Home() {
               : g,
           ),
         );
-        // Resolve final category/schema before review, never during publication.
         let researchListing = data.listing;
         try {
           const pr = await apiPost("/api/ebay/prepare", {
@@ -606,8 +610,6 @@ export default function Home() {
             ),
           );
         }
-        // Market price check — advisory and best-effort, so it runs in the
-        // background and silently stays hidden if it can't answer.
         void (async () => {
           try {
             const res = await apiPost("/api/ebay/comps", {
@@ -660,10 +662,6 @@ export default function Home() {
   );
 
   const writeAll = async () => {
-    // Only write listings that don't exist yet. Re-running everything after a
-    // trip back to the review step re-billed the AI for unchanged listings
-    // (issue #30) — groups whose photos changed are reset to "idle" by
-    // movePhoto, so they (and only they) get rewritten here.
     const usable = groups
       .filter(
         (g) =>
@@ -696,8 +694,6 @@ export default function Home() {
                 ...patch,
                 ...(patch.size !== undefined
                   ? {
-                      // Shoe categories: US Shoe Size / Shoe Width follow the
-                      // edited size (EU/UK converted to US).
                       item_specifics: syncShoeSizeSpecifics(
                         {
                           ...g.listing,
@@ -761,9 +757,6 @@ export default function Home() {
             return { mediaType: p.mediaType, data: p.uploadData ?? p.data };
           }),
         );
-        // 1. Ship the photos to eBay first, in batches small enough that no
-        // single request can hit Vercel's 4.5 MB body limit — the old
-        // all-in-one publish request 413-failed on photo-heavy listings.
         const alreadyUploaded =
           group.uploadedPhotoIds?.join(",") === group.photoIds.join(",")
             ? group.imageUrls
@@ -828,7 +821,6 @@ export default function Home() {
           step: "listings",
           updatedAt: Date.now(),
         });
-        // 2. Publish with the eBay-hosted URLs (a few KB instead of megabytes).
         let data: {
           success: boolean;
           listingId?: string;
@@ -846,8 +838,6 @@ export default function Home() {
             review: group.preparation,
             expectedPhotoCount: group.photoIds.length,
           });
-          // Wait out rate limits / transient platform errors instead of dying
-          // mid-batch with "try again later".
           if (attempt < 2 && TRANSIENT_STATUSES.has(res.status)) {
             hadTransientRetry = true;
             await sleep(res.status === 429 ? 65_000 : 8_000);
@@ -856,8 +846,6 @@ export default function Home() {
           data = await readJson(res);
           break;
         }
-        // A retried publish that finds the SKU already live means the earlier
-        // attempt actually landed before the timeout — that's a success.
         if (
           data &&
           !data.success &&
@@ -915,6 +903,7 @@ export default function Home() {
     sorting ||
     Boolean(queue?.running) ||
     groups.some((g) => g.status === "writing" || g.postStatus === "posting");
+
   async function startNewBatch() {
     const unposted = groups.filter(
       (g) => g.listing && g.postStatus !== "posted",
@@ -959,6 +948,7 @@ export default function Home() {
         here to avoid conflicting edits.
       </main>
     );
+
   return (
     <main className={step === "listings" ? "wrap wrap-wide" : "wrap"}>
       <div className="save-bar">
@@ -1032,8 +1022,8 @@ export default function Home() {
               <span className="field-hint">
                 Each item gets{" "}
                 {binPrefix
-                  ? `${binPrefix.trim()}-A, ${binPrefix.trim()}-B`
-                  : "A, B, C"}
+                  ? `${binPrefix.trim()}-1, ${binPrefix.trim()}-2`
+                  : "1, 2, 3"}
                 … with a unique suffix to prevent collisions across devices. If
                 this bin already has listings on eBay, lettering continues where
                 it left off. You can edit any SKU after sorting.
@@ -1109,11 +1099,11 @@ export default function Home() {
                 }
          onClick={() => {
                   const id = newId();
-                  // Apply the exact same offset logic used in the sorter
                   const nextNum = skuStart + 1;
                   setGroups([
                     {
                       id,
+                      // FIX: Removed spaces here too
                       sku: binPrefix.trim() ? `${binPrefix.trim()}-${nextNum}` : `Item ${nextNum}`,
                       name: "Single item",
                       photoIds: photos.map((p) => p.id),
